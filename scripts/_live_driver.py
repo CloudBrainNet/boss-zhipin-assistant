@@ -84,6 +84,10 @@ from scripts.webbridge_client import (
     ProgressManager, extract_jobs, navigate, parse_salary_max,
 )
 from scripts.config_v3 import load_profile
+try:
+    from scripts import ledger as _ledger
+except Exception:
+    _ledger = None
 
 WORKDIR = os.environ.get("BOSS_WORKDIR") or os.getcwd()
 STATE_FILE = os.path.join(WORKDIR, "walk_state.json")
@@ -200,13 +204,59 @@ def _exhaust_recommend_feed(cap=80):
 
 
 def _delivered_jids():
-    """已投递 jobId 集合（机械去重，防重复呈现/重复投递）。纯机械、非方向判断。"""
+    """已投递 jobId 集合（机械去重，防重复呈现/重复投递）。纯机械、非方向判断。
+
+    v7 跨轮去重：合并两类来源——
+      ① 本轮 stream_progress.json 的 delivered 记录；
+      ② ledger_seen.json（云端《BOSS投递台账》历史已投 jobId 的本地种子，
+         由智能体投递前用 `ledger.py seed` 写入），实现「跨轮不重复投」。
+    """
+    jids = set()
     try:
         with open(os.path.join(WORKDIR, "stream_progress.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
-        return set(r.get("jobId") for r in d.get("delivered", []) if r.get("jobId"))
+        jids |= set(r.get("jobId") for r in d.get("delivered", []) if r.get("jobId"))
     except Exception:
-        return set()
+        pass
+    if _ledger is not None:
+        try:
+            jids |= _ledger.seen_jids()
+        except Exception:
+            pass
+    return jids
+
+
+def _progress():
+    """v7 进展统计：返回当前执行进度（供智能体实时感知，也写入每条 surface 输出）。
+
+    统计口径：
+      - delivered  已成功投递份数（本轮 stream_progress.json 的 delivered）
+      - seen       已查阅份数（游标已推进过的卡片：idx，含被机械跳过的）
+      - rejected   已判否（人工/智能体略过）份数
+      - skipped    本轮机械跳过份数（城市/薪资不过关 + 已投递去重）
+      - pending    待同步台账份数（ledger_pending.json）
+      - ledger_seen 台账历史已投 jobId 总数（跨轮去重种子）
+    """
+    prog = {"delivered": 0, "failed": 0, "blocked": 0, "rejected": 0,
+            "seen": 0, "pending": 0, "ledger_seen": 0}
+    try:
+        with open(os.path.join(WORKDIR, "stream_progress.json"), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        prog["delivered"] = len(d.get("delivered", []))
+        prog["failed"] = len(d.get("failed", []))
+        prog["blocked"] = len(d.get("blocked", []))
+    except Exception:
+        pass
+    st = walk_state()
+    prog["rejected"] = len(st.get("rejected_jids", []))
+    prog["seen"] = int(st.get("idx", 0) or 0)
+    if _ledger is not None:
+        try:
+            prog["pending"] = len(_ledger._load(_ledger.PENDING_FILE, []))
+            prog["ledger_seen"] = len(_ledger.seen_jids())
+        except Exception:
+            pass
+    return prog
 
 
 def _present_next():
@@ -298,6 +348,7 @@ def _present_next():
             "mech": m,
             "auto_skipped_mech": skipped,
             "visible_total": len(jobs),
+            "progress": _progress(),
             "recommend_exhausted": st.get("recommend_exhausted", False),
             "hint": "只判这一张：表面命中→ open <jobId> 读JD→判→deliver；不命中→ walk --next 跳过。勿重复 walk(会回顶部)。"
         }, ensure_ascii=False))
@@ -308,6 +359,7 @@ def _present_next():
     print(json.dumps({
         "view_exhausted": True, "keyword": kw, "idx": i,
         "auto_skipped_mech": skipped,
+        "progress": _progress(),
         "recommend_exhausted": st.get("recommend_exhausted", False),
         "kw_exhausted": st.get("kw_exhausted", False),
         "hint": ("该关键词已翻到底(kw_exhausted)，可换下一个 walk <关键词>" if kw and st.get("kw_exhausted")
@@ -456,6 +508,33 @@ def cmd_deliver(jid, company="", salary="", industry="", direction=""):
         except Exception:
             pass
         pm.save()
+        # v7 台账同步：投递成功后，把这条记录写进本地待同步队列（ledger_pending.json），
+        # 由智能体在收尾时读取并写入云端《BOSS投递台账》。脚本不直接碰云端。
+        try:
+            if _ledger is not None:
+                _ledger.mark({
+                    "岗位ID": job.get("jobId"),
+                    "公司": job.get("company", ""),
+                    "岗位": job.get("title", ""),
+                    "薪资": job.get("salary", ""),
+                    "来源关键词": walk_state().get("keyword", ""),
+                    "方向": direction,
+                    "行业": job.get("industry", ""),
+                    "状态": "已投",
+                    "已回读确认": True,
+                    "投递日期": time.strftime("%Y-%m-%d"),
+                })
+        except Exception:
+            pass
+        # v7 进展展示：打印一行人类可读的实时进度（已投递/已查阅/待同步）。
+        try:
+            p = _progress()
+            print("PROGRESS " + json.dumps(
+                {"已投递": p["delivered"], "已查阅": p["seen"],
+                 "已判否": p["rejected"], "待同步台账": p["pending"]},
+                ensure_ascii=False))
+        except Exception:
+            pass
         # v6.9.1 修（顺序错乱根因）：投递会触发"立即沟通"弹窗→可能 wrong_path 导航回推荐页；
         # 即使正常路径，BOSS 也会把已投卡片从推荐列表移除并回流重排。若不清游标，下次
         # walk --next 会拿陈旧 idx/last_jid 续跑，漏掉重排后前移的未审卡片（即"跳过第N张跳到后面"）。
@@ -548,6 +627,8 @@ if __name__ == "__main__":
     elif action in ("reset", "--reset"):
         save_state({})
         print("WALK_STATE_RESET")
+    elif action in ("progress", "--progress", "status", "--status"):
+        print(json.dumps(_progress(), ensure_ascii=False))
     elif action == "walk":
         if len(sys.argv) > 2 and sys.argv[2] in (
                 "--next", "next", "--more", "more", "--exhaust", "exhaust",

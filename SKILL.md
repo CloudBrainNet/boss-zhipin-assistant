@@ -265,18 +265,91 @@ AI 基于**语义理解**决定 APPROVE / REJECT，**不是关键词命中即过
 
 ---
 
-## 管道总览（v6.9）
+## 📒 投递台账同步 + 实时进展（v7 新增）
+
+### 功能一：投递台账同步（防重复投递）
+
+每次投递都同步到资料库《BOSS投递台账》（云端 database），用于**跨轮防重复投递**，提升投递效率。
+
+**核心机制（智能体在环，脚本不直接碰云端）**：
+
+- 云端台账由**运行本技能的智能体**负责读写（脚本跑在终端、拿不到资料库鉴权）。
+- 台账主键为 **`岗位ID`（jobId）**——同一 jobId 只投一次，下一轮自动跳过。
+
+**标准闭环（智能体 MUST 执行）**：
+
+1. **投递前 · 播种去重种子**：智能体先从资料库查《BOSS投递台账》的全部 `岗位ID`，用
+   `scripts/ledger.py seed '<jobId数组JSON>'` 写入本地 `ledger_seen.json`。
+   脚本 `_live_driver` 的 `_delivered_jids()` 会合并它，实现跨轮去重——上一轮已投的岗位本轮自动跳过。
+   > 台账节点（资料库 database）：标题《BOSS投递台账》，当前 nodeId `lo6GPT9hiOeRMKFp41S1HZ`；
+   > 若资料库无此台账，先由智能体调用资料库 database 能力创建（字段见下「台账字段」）。
+2. **投递中 · 自动入队**：`_live_driver deliver` 成功时，脚本自动把该条投递记录写入
+   `ledger_pending.json`（待同步队列，按 jobId 去重，不会重复入队）。
+3. **收尾 · 落库 + 清队**：智能体读取 `ledger_pending.json`，把队列里的记录逐条写入云端台账
+   （`岗位ID` 已存在则跳过，避免重复行），完成后 `scripts/ledger.py flush` 清空队列。
+
+**台账字段（database schema，与现有台账一致）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| 投递日期 | date | 投递当天 |
+| 公司 | text | 公司名 |
+| 岗位 | text | 岗位名 |
+| 薪资 | text | 薪资区间 |
+| 来源关键词 | text | 本轮搜索关键词 |
+| 方向 | text | 方向标签 |
+| 岗位ID | text | **去重主键（jobId）** |
+| 状态 | select | 已投 / 已回复 / 邀面试 / 不合适 |
+| 行业 | text | 行业 |
+| 匹配依据 | text | AI 判投理由 |
+| 投递轮次 | text | 轮次说明 |
+| 已回读确认 | checkbox | 是否回读确认送达 |
+| 备注 | text | 备注 |
+
+**ledger.py 命令**：
+
+```powershell
+python "$skill\scripts\ledger.py" seed  '["jobId1","jobId2"]'   # 播种历史已投 jobId（跨轮去重）
+python "$skill\scripts\ledger.py" mark  '<投递记录JSON>'          # 追加一条待同步记录（脚本自动调用）
+python "$skill\scripts\ledger.py" peek                            # 查看待同步队列
+python "$skill\scripts\ledger.py" seen                            # 查看去重种子数量
+python "$skill\scripts\ledger.py" flush                           # 同步完成后清空队列
+```
+
+### 功能二：实时进展展示
+
+脚本在执行时实时输出进展，智能体每走一步都能感知当前进度：
+
+- **每个 `walk` / `walk --next` 的 surface 输出**都带 `progress` 字段：`已投递`、`已查阅`（游标推进过的卡片数）、`已判否`、`待同步台账`、`台账历史已投`。
+- **`deliver` 成功后**打印一行人类可读进展：`PROGRESS {"已投递": N, "已查阅": M, "已判否": K, "待同步台账": P}`。
+- **随时查询进度**：
+
+```powershell
+python "$skill\scripts\_live_driver.py" progress
+# 输出：{"delivered":12,"failed":0,"blocked":0,"rejected":35,"seen":60,"pending":12,"ledger_seen":180}
+```
+
+> 字段口径：`delivered`=本轮已成功投递；`seen`=已查阅（游标 idx）；`rejected`=已判否；
+> `pending`=待同步台账；`ledger_seen`=台账历史已投总数（跨轮去重种子）。
+
+---
+
+## 管道总览（v7）
 
 ```
 实时投递（_live_driver.py · 推荐路径）:
-  walk（进推荐页·呈现下一张卡表面）
+  ① 投前：ledger.py seed <台账历史jobId>  → 跨轮去重种子
+  ② walk（进推荐页·呈现下一张卡表面，带 progress 进展）
     → 表面命中? open <jobId>（一次只开一张读 JD）
     → AI 语义判（基于 role_summary/prefer/avoid + JD 全文）
-    → APPROVE: deliver <jobId>（当场点「立即沟通」→ 成功弹窗点「留在此页」→ 回读校验送达）
+    → APPROVE: deliver <jobId>（当场点「立即沟通」→ 成功弹窗点「留在此页」→ 回读校验送达
+              → 自动 ledger.mark 入待同步队列 → 打印 PROGRESS 进展）
     → REJECT:  reject <jobId>  → walk --next（推进下一张）
         ↓（推荐页穷尽后，缺某方向才 walk <关键词> 补刀，同样逐张走）
-收尾（phase_stream.py · 必做）:
-  --mode report  → 读 stream_progress.json → 按 direction 分组 → 生成「投递汇总.html」（汇报+打赏双码合一）
+收尾（必做 · 三件事）:
+  ① 台账落库：智能体读 ledger_pending.json → 逐条写入云端《BOSS投递台账》（按岗位ID去重）→ ledger.py flush
+  ② 成果汇报：phase_stream.py --mode report → 读 stream_progress.json → 按 direction 分组 → 生成「投递汇总.html」（汇报+打赏双码合一）
+  ③ 进度核对：_live_driver.py progress（本轮 delivered/seen/rejected 终值）
 ```
 
 - 脚本只做机械劳动（城市/薪资硬门槛 + 点击/回读）+ 平台级安全护栏（登录态/日上限/已投去重/送达确认）；
@@ -298,16 +371,26 @@ cd <你的工作目录，如 D:\boss-data>
 $skill = "$HOME\.workbuddy\skills\boss-zhipin-assistant"
 
 # ════════ 推荐（实时·逐条行走·推荐页优先）：walk → open → deliver → walk --next ════════
-python "$skill\scripts\_live_driver.py" walk              # 【默认起点】进 BOSS 推荐页，打印左侧表面清单
+# 投前：先播种台账历史 jobId（跨轮去重，由智能体从资料库《BOSS投递台账》查到后执行）
+python "$skill\scripts\ledger.py" seed '["已投jobId1","已投jobId2",...]'
+
+python "$skill\scripts\_live_driver.py" walk              # 【默认起点】进 BOSS 推荐页，呈现下一张卡表面（带 progress）
 python "$skill\scripts\_live_driver.py" open <jobId>       # 一次只开一张读 JD
-python "$skill\scripts\_live_driver.py" deliver <jobId> [公司] [薪资] [行业] [方向]   # 当场投（jid 必填，其余可选；[方向]供收尾汇报页分组；先自动选中并校验面板再点「立即沟通」）
-python "$skill\scripts\_live_driver.py" walk --next        # 自动跳过不过关卡、开下一张
+python "$skill\scripts\_live_driver.py" deliver <jobId> [公司] [薪资] [行业] [方向]   # 当场投（自动入台账待同步队列 + 打印 PROGRESS 进展）
+python "$skill\scripts\_live_driver.py" walk --next        # 自动跳过不过关卡（含台账已投）、开下一张
+python "$skill\scripts\_live_driver.py" progress           # 随时查看进度：已投递/已查阅/已判否/待同步台账
 # 推荐页扫完仍缺某方向（如茶室/营地/书店）→ 才用关键词补刀：
 python "$skill\scripts\_live_driver.py" walk 文旅          # 关键词仅作推荐页供给不足时的补充
 
-# ════════ 收尾闭环：生成「投递成果汇报 + 打赏」二合一页（必做）════════
+# ════════ 收尾闭环（必做 · 三件事）════════
+# ① 台账落库：智能体读 ledger_pending.json → 逐条写入云端《BOSS投递台账》（按岗位ID去重）
+python "$skill\scripts\ledger.py" peek                      # 查看待同步队列
+python "$skill\scripts\ledger.py" flush                     # 同步完成后清空队列
+# ② 成果汇报：生成「投递成果汇报 + 打赏」二合一页
 python "$skill\scripts\phase_stream.py" --mode report --workdir .   # 输出 投递汇总.html（自包含·二维码内嵌·按方向分组）
 # 然后用 present_files 把 投递汇总.html 展示给用户（不可省略）
+# ③ 进度核对：查看本轮终值
+python "$skill\scripts\_live_driver.py" progress
 
 # 独立诊断/核对（不投递主流程）：
 python "$skill\scripts\phase_stream.py" --mode verify --workdir .   # 交叉核对真实沟通列表（读后自动回推荐页）
@@ -334,7 +417,8 @@ python "$skill\scripts\phase_stream.py" --diag --workdir .           # 只读 du
 │   ├── config_v3.py            ← v6：档案加载 + 薪资解析 + build_review_prompt(动态AI审核提示词)；无硬编码筛选
 │   ├── env_check.py            ← 环境检测（浏览器[Chrome/Edge]/WebBridge/Boss登录态）+ 修复指引
 │   ├── phase_stream.py         ← 投递共享原语 + 收尾：deliver_click（推荐页内原地投递）/弹窗识别关闭/面板校验/每步回读；--mode report（生成「投递汇总.html」合并汇报页，二维码 base64 内嵌）；--mode verify（独立核对真实沟通列表）；--diag（只读诊断）
-│   ├── _live_driver.py          ← 实时单卡投递驱动（walk/open/deliver/reject/walk --next/--more/--reset）；游标制单卡呈现；无 scan 批量开 JD
+│   ├── _live_driver.py          ← 实时单卡投递驱动（walk/open/deliver/reject/walk --next/--more/--reset/progress）；游标制单卡呈现；无 scan 批量开 JD；输出带 progress 进展
+│   ├── ledger.py                ← v7 投递台账本地桥接（seed/mark/peek/seen/flush）：跨轮去重种子 + 待同步队列，智能体据此写云端《BOSS投递台账》
 │   └── cleanup.py              ← 缓存清理
 └── references/
     ├── dom_structure.md

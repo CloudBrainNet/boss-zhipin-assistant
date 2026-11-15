@@ -20,6 +20,10 @@ round_meta.json
 candidates/
 投递汇总.html
 
+# v7 台账桥接运行态（去重种子 + 待同步队列，均在投递工作目录生成）
+ledger_seen.json
+ledger_pending.json
+
 # 标签页锁 / 临时文件
 .tab_lock
 *.log

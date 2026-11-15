@@ -61,6 +61,8 @@ python "$skill\scripts\phase_stream.py" --mode report --workdir .
 - **AI 语义终审（零外部 API）**：最终「该不该投」由运行本技能的智能体自身完成语义判断，不依赖关键词匹配，也不调用任何外部 LLM API。
 - **实时单卡投递**：智能体驱动浏览器，一张卡一张卡地「表面粗看 → 点开读 JD → 语义判断 → 当场投递」，判断与投递在同一个 live 页面态完成，绝不预采集批量候选。
 - **推荐页优先**：默认从 BOSS 推荐页（个性化 feed）逐条行走，穷尽后再用关键词搜索补刀。
+- **投递台账同步（防重复投递）**：每次投递同步到资料库《BOSS投递台账》，按 `岗位ID` 去重，下一轮自动跳过已投岗位，提升投递效率。
+- **实时进展展示**：执行中实时输出「已投递 / 已查阅 / 已判否 / 待同步」等进度，随时可查。
 - **安全护栏**：城市 / 薪资硬门槛、已投去重、送达回读校验、日上限检测、连续失败熔断、未知弹窗整批停手交人工。
 
 ## 前置依赖
@@ -83,8 +85,9 @@ boss-zhipin-assistant/
 ├── boss_applied.json      # 历史投递样本占位（不参与运行）
 ├── assets/                # 赞赏码图片（可选，默认不含真实收款码）
 ├── scripts/               # 核心脚本
-│   ├── _live_driver.py    # 实时单卡投递驱动（walk/open/deliver/reject）
+│   ├── _live_driver.py    # 实时单卡投递驱动（walk/open/deliver/reject/progress）
 │   ├── phase_stream.py    # 投递原语 + 收尾汇报/核对/诊断
+│   ├── ledger.py          # 投递台账桥接（跨轮去重种子 + 待同步队列）
 │   ├── webbridge_client.py# WebBridge 共享客户端
 │   ├── config_v3.py       # 档案加载 + 薪资解析 + 动态审核提示词
 │   ├── env_check.py       # 环境检测（浏览器/WebBridge/登录态）
