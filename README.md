@@ -25,18 +25,39 @@ BOSS 直聘自动化投递助手 —— 一个面向 WorkBuddy 智能体的求�
 
 ## 安装
 
+### 方式一（推荐）：一句话自动安装
+
+无需手动下载或复制文件。复制下面这段话，直接发给 **WorkBuddy 智能体**，它会自动拉取本仓库、复制到技能目录并完成安装：
+
+```text
+请帮我安装一个 WorkBuddy 技能：boss-zhipin-assistant（BOSS直聘自动化投递助手）。
+GitHub 仓库地址：https://github.com/CloudBrainNet/boss-zhipin-assistant
+请把整个仓库克隆下来，复制到 ~/.workbuddy/skills/boss-zhipin-assistant 目录，
+并把 user_profile.example.json 复制为 user_profile.json。
+完成后告诉我安装结果，以及使用前还需要做哪些配置。
+```
+
+安装完成后，在 WorkBuddy 的「技能」页面即可看到该技能。之后你只要说「帮我投 BOSS 直聘的 XX 岗位」之类的指令，它就会自动触发。
+
+### 方式二：手动安装
+
 将本目录复制到 WorkBuddy 的用户技能目录：
 
 ```bash
 # 克隆仓库
-git clone https://github.com/<你的用户名>/boss-zhipin-assistant.git
-# 复制到技能目录（Linux / macOS 同理，Windows 用户目录为 %USERPROFILE%）
+git clone https://github.com/CloudBrainNet/boss-zhipin-assistant.git
+# 复制到技能目录（Windows 为 %USERPROFILE%\.workbuddy\skills\boss-zhipin-assistant）
 cp -r boss-zhipin-assistant ~/.workbuddy/skills/boss-zhipin-assistant
+# 复制个人档案模板
+cp ~/.workbuddy/skills/boss-zhipin-assistant/user_profile.example.json \
+   ~/.workbuddy/skills/boss-zhipin-assistant/user_profile.json
 ```
 
 ## 使用
 
-### 1. 填写个人档案
+> 💡 **最快上手**：安装后，直接对 WorkBuddy 智能体说一句话，例如「帮我在 BOSS 直聘上投 XX 方向的岗位，月薪 ≥7K」，它会通过问答采集你的求职意向、自动生成个人档案并开始投递——**不需要你手动编辑任何文件**。
+
+### 1. 填写个人档案（可选，也可交给智能体）
 
 复制技能目录下的 `user_profile.example.json` 为 `user_profile.json`，然后填写。重点是 `role_summary`（一句话自述求职方向，AI 审核的核心依据）、`prefer` / `avoid`（希望投 / 不希望投清单）。文件内含示例模板，全部字段为自由文本，换一个求职者只需改这个文件，代码一行不动。
 
