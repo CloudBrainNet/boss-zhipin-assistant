@@ -1,0 +1,31 @@
+# 个人档案（含真实姓名、工作经历、求职策略）——绝不提交
+# 示例模板 user_profile.example.json 会被提交；使用者复制为 user_profile.json 后填写
+user_profile.json
+user_profile.*.bak.json
+
+# 赞赏码（个人收款码）——绝不提交
+assets/tip_wechat.jpg
+assets/tip_alipay.jpg
+
+# Python 运行缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 运行态产物（投递进度 / 去重 / 汇报页）
+stream_progress*.json
+stream_seen*.json
+round_meta.json
+*.onboarded
+candidates/
+投递汇总.html
+
+# 标签页锁 / 临时文件
+.tab_lock
+*.log
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
